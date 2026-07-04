@@ -251,7 +251,7 @@ NSArray<NSDictionary *> *getArchitecturesInfoForFile(NSString *filePath) {
     
     NSData *fileData = [NSData dataWithContentsOfFile:filePath];
     if (fileData == nil) {
-        NSLogger(@"Failed to read file data.");
+        NSLogger(@"Failed to read file data.%@",filePath);
         return nil;
     }
     const uint32_t magic = *(const uint32_t *)fileData.bytes;
@@ -427,7 +427,6 @@ NSArray<NSDictionary *> *getArchitecturesInfoForFile(NSString *filePath) {
     for (uint32_t i = 0; i < imageCount; i++) {
         const char* currentImageName = _dyld_get_image_name(i);
         NSString *currentImageNameString = [NSString stringWithUTF8String:currentImageName];
-        
         if ([currentImageNameString.lastPathComponent isEqualToString:imageName]) {
             NSLogger(@"%@ -> %d", imageName,i);
             return i;
@@ -574,10 +573,11 @@ BOOL isSwiftClassName(const char *name) {
                         objDesc = @"nil";
                     }
                 }
-                [log appendFormat:@"  Ivar[%d]: %s, Type: %s, Offset: 0x%lx, Hex: %@%@\n",
+                [log appendFormat:@"  Ivar[%d]: %s, Type: %s, Addr: %p, Offset: 0x%lx, Hex: %@%@\n",
                                  i,
                                  name ? name : "(unnamed)",
                                  typeEncoding ? typeEncoding : "(null)",
+                                 ivarPtr,
                                  offset,
                                  hexString,
                                  objDesc ? [NSString stringWithFormat:@", Value: %@", objDesc] : @""];
@@ -614,7 +614,7 @@ BOOL isSwiftClassName(const char *name) {
     if (methods) free(methods);
 
     [log appendString:@"=== End dumpOSObjClz ===\n"];
-    NSLogger(@"%@", log);
+    CLogger("%s", [log UTF8String]);
 }
 
 #if TARGET_OS_OSX
@@ -985,6 +985,13 @@ BOOL isSwiftClassName(const char *name) {
 + (void)hookWithMachineCode:(NSString *)searchFilePath
                machineCode:(NSString *)machineCode
                   fake_func:(void *)fake_func
+               choice_count:(int)choice_count {
+    [self hookWithMachineCode:searchFilePath machineCode:machineCode fake_func:fake_func choice_count:choice_count out_orig:NULL];
+}
+
++ (void)hookWithMachineCode:(NSString *)searchFilePath
+               machineCode:(NSString *)machineCode
+                  fake_func:(void *)fake_func
                       count:(int)count
                    out_orig:(void **)out_orig{
     
@@ -1004,6 +1011,32 @@ BOOL isSwiftClassName(const char *name) {
         intptr_t funAddress = [MemoryUtils getPtrFromGlobalOffset:imageIndex globalFunOffset:(uintptr_t)[globalFunOffset unsignedIntegerValue] fileOffset:(uintptr_t)fileOffset];
         tiny_hook((void *)funAddress, fake_func, out_orig);
         processedCount++;
+    }
+}
+
++ (void)hookWithMachineCode:(NSString *)searchFilePath
+               machineCode:(NSString *)machineCode
+                  fake_func:(void *)fake_func
+               choice_count:(int)choice_count
+                   out_orig:(void **)out_orig{
+    
+    NSString *fullFilePath = [[Constant getCurrentAppPath] stringByAppendingString:searchFilePath];
+    uintptr_t fileOffset = [self getCacheFileOffset:fullFilePath];
+    NSArray<NSNumber *> *codeOffsets = [self searchMachineCodeOffsets:fullFilePath
+                                                          machineCode:machineCode
+                                                                 count:100];
+    
+    NSString *imageName = [searchFilePath lastPathComponent];
+    int imageIndex = [self indexForImageWithName:imageName];
+    int processedCount = 0;
+    for (NSNumber *globalFunOffset in codeOffsets) {
+        if (processedCount != choice_count) {
+            continue;;
+        }
+        intptr_t funAddress = [MemoryUtils getPtrFromGlobalOffset:imageIndex globalFunOffset:(uintptr_t)[globalFunOffset unsignedIntegerValue] fileOffset:(uintptr_t)fileOffset];
+        tiny_hook((void *)funAddress, fake_func, out_orig);
+        processedCount++;
+        break;
     }
 }
 @end

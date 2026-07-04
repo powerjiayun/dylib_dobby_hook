@@ -635,6 +635,42 @@ OSStatus hk_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
 
 
 
+NSString *decodeSwiftString(const void *addr)
+{
+    SwiftString s = *(const SwiftString *)addr;
+    if ((s.word0 >> 60) == 0xD) {
+        uint64_t length = s.word0 & 0x00FFFFFFFFFFFFFFULL;
+        uintptr_t ptr = s.word1 & 0x7FFFFFFFFFFFFFFFULL;
+        return [[NSString alloc] initWithBytes:(void *)ptr length:length encoding:NSUTF8StringEncoding];
+    }
+
+    uint8_t bytes[16] = {0};
+    memcpy(bytes, &s.word0, 8);
+    memcpy(bytes + 8, &s.word1, 8);
+    bytes[15] = 0;
+    size_t len = strnlen((char *)bytes, 15);
+    return [[NSString alloc] initWithBytes:bytes length:len encoding:NSUTF8StringEncoding];
+}
+
+SwiftString makeSwiftString(NSString *imageName, NSString *nsStr)
+{
+    static SwiftString (*bridgeFunc)(NSString *) = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (imageName.length > 0) {
+            bridgeFunc = symstub_solve([MemoryUtils indexForImageWithName:imageName], "_$sSS10FoundationE36_unconditionallyBridgeFromObjectiveCySSSo8NSStringCSgFZ");
+        } else {
+            bridgeFunc = NULL;
+        }
+    });
+
+    if (bridgeFunc && nsStr) {
+        SwiftString result = bridgeFunc(nsStr);
+        return result;
+    }
+    return (SwiftString){0, 0};
+}
+
 // Why do you want to see here ???
 NSString *love69(NSString *input) {
     NSMutableString *output = [NSMutableString stringWithCapacity:input.length];

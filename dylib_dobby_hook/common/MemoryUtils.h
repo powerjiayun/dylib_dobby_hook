@@ -233,6 +233,13 @@ static inline Ivar _ivar(id obj, const char *name) {
                   fake_func:(void *)fake_func
                       count:(int)count;
 
+
+//@param choice_count The number of functions to hook.
++ (void)hookWithMachineCode:(NSString *)searchFilePath
+               machineCode:(NSString *)machineCode
+                  fake_func:(void *)fake_func
+               choice_count:(int)choice_count;
+
 /**
  * Example usage:
  * [MemoryUtils hookWithMachineCode:@"/Contents/MacOS/Surge"
@@ -246,10 +253,18 @@ static inline Ivar _ivar(id obj, const char *name) {
  * @param fake_func The function to replace the original function with.
  * @param count The maximum number of functions to hook.
  * @param out_orig A pointer to store the original function address, if needed.
+ *
  */
+
 + (void)hookWithMachineCode:(NSString *)searchFilePath
                machineCode:(NSString *)machineCode
                   fake_func:(void *)fake_func
                       count:(int)count
+                   out_orig:(void **)out_orig;
+
++ (void)hookWithMachineCode:(NSString *)searchFilePath
+               machineCode:(NSString *)machineCode
+                  fake_func:(void *)fake_func
+               choice_count:(int)choice_count
                    out_orig:(void **)out_orig;
 @end

@@ -1,245 +1,117 @@
 ---
 name: dylib-dobby-hook
-description: Work on this dylib_dobby_hook_private project. Use when adding or editing macOS/iOS dylib injection hooks, creating HackProtocolDefault subclasses, patching bytes with write_mem, hooking C functions or raw addresses with tiny_hook, interposing lazy symbols with tiny_interpose, resolving symbols with symtbl_solve/symexp_solve/symstub_solve, hooking Objective-C methods with MemoryUtils hookInstanceMethod/hookClassMethod/replaceInstanceMethod/replaceClassMethod, or hooking Swift functions with SWIFTCALL/SWIFT_INDIRECT_RESULT/SWIFT_CONTEXT attributes.
+description: Dylib injection hook framework for macOS/iOS. Provides C function hooking (tiny_hook), dyld symbol interposition (tiny_interpose), symbol resolution (symtbl_solve/symexp_solve/symstub_solve), memory patching (write_mem), Objective-C method swizzling (MemoryUtils), and Swift ABI-compatible hooking (SWIFTCALL/SWIFT_CONTEXT attributes).
+version: 1.0
+language: en
+tags: [dylib, dobby, hook, macOS, iOS, injection, tinyhook, MemoryUtils, Swift]
 ---
 
 # Dylib Dobby Hook
 
-项目入口：`+[dylib_dobby_hook load] -> [Constant doHack]`。扩展方式是新增或修改 `HackProtocolDefault` 子类；`doHack` 会枚举子类，先用类方法 `+shouldInject:` 和 `+getSupportAppVersion` 匹配，命中后才创建实例并调用 `hack`。
+Project entry point: `+[dylib_dobby_hook load] -> [Constant doHack]`.
+Extension pattern: subclass `HackProtocolDefault`, implement `+getAppName`, `+getSupportAppVersion`, `-hack`.
 
-常用文件：
+## Common Files
 
-- `dylib_dobby_hook/tinyhook.h`: `tiny_hook`, `tiny_interpose`, `symtbl_solve`, `symexp_solve`, `symstub_solve`, `write_mem`, `ocrt_hook`
-- `dylib_dobby_hook/common/MemoryUtils.h`: OC hook、特征码搜索、偏移换算、ivar/msgSend 工具
-- `dylib_dobby_hook/common/CommonRetOC.m`: `ret0`, `ret1`, `ret` 和通用 CloudKit/Keychain/SecCode hook
-- `dylib_dobby_hook/mac/apps/*.m`, `dylib_dobby_hook/ios/apps/*.m`: 现有 app hook 示例
+| File | Contents |
+|------|----------|
+| `tinyhook.h` | `tiny_hook`, `tiny_interpose`, `symtbl_solve`, `symexp_solve`, `symstub_solve`, `write_mem` |
+| `MemoryUtils.h` | OC method hook, signature scan, address translation utilities |
+| `CommonRetOC.m` | `ret0`/`ret1`/`ret` stubs, CloudKit/Keychain/SecCode hooks |
+| `mac/apps/*.m`, `ios/apps/*.m` | Reference app hook implementations |
 
-## 新增 App Hook
+## Adding a New App Hook
 
-macOS app 放 `dylib_dobby_hook/mac/apps/XXXHack.m`，iOS app 放 `dylib_dobby_hook/ios/apps/XXXHack.m`。
+Create `mac/apps/XXXHack.m` (macOS) or `ios/apps/XXXHack.m` (iOS):
 
-```objective-c
-#import <Foundation/Foundation.h>
-#import "Constant.h"
-#import "tinyhook.h"
-#import "MemoryUtils.h"
-#import "HackProtocolDefault.h"
-#import "common_ret.h"
-
+```objc
 @interface XXXHack : HackProtocolDefault
 @end
 
 @implementation XXXHack
 
-+ (NSString *)getAppName {
-    return @"com.example.app";
-}
-
-+ (NSString *)getSupportAppVersion {
-    return @"1."; // 用版本前缀；不限制时返回 @""
-}
++ (NSString *)getAppName { return @"com.example.app"; }
++ (NSString *)getSupportAppVersion { return @"1."; } // prefix match; @"" for any version
 
 - (BOOL)hack {
-#if defined(__arm64__) || defined(__aarch64__)
-    // arm64 hook/patch
-#elif defined(__x86_64__)
-    // x86_64 hook/patch
-#endif
+    // hook code here
     return YES;
 }
 
 @end
 ```
 
-`+shouldInject:` 默认按 bundle id 前缀匹配。框架型/base hook 可重写，例如检测某个 image 是否加载：
+Override `+shouldInject:` to customize injection condition (default: bundle ID prefix match):
 
-```objective-c
+```objc
 + (BOOL)shouldInject:(NSString *)target {
     return [MemoryUtils indexForImageWithName:@"Paddle"] > 0;
 }
 ```
 
-## tinyhook: 已知 C 函数
+## Hooking C Functions
 
-替换系统 C 函数或已拿到函数指针的目标。需要调用原函数时保存 `orig_xxx`，不需要时传 `NULL`。
+### Target Resolution
 
-```objective-c
-static int (*orig_ptrace)(int request, pid_t pid, caddr_t addr, int data);
+| Strategy | API | When to Use |
+|----------|-----|-------------|
+| Direct symbol | `tiny_hook((void*)func, hk, &orig)` | Function linked into current image |
+| Symbol table | `symtbl_solve(img, name)` → `tiny_hook(...)` | Symbol name known, target in another image |
+| Export table | `symexp_solve(img, name)` → `tiny_hook(...)` | Exported symbols only |
+| Stub / lazy | `symstub_solve(img, name)` → `tiny_hook(...)` | Lazy-bound Swift stubs |
+| Static VA | `[MemoryUtils getPtrFromAddress:path targetFunctionAddress:va]` | IDA/Hopper static address |
+| File offset | `[MemoryUtils getPtrFromGlobalOffset:path globalFunOffset:]` | Mach-O file offset |
+| Signature scan | `[MemoryUtils getPtrFromMachineCode:path machineCode:pattern]` | Stripped symbols, byte pattern |
 
-static int hk_ptrace(int request, pid_t pid, caddr_t addr, int data) {
-    NSLogger(@"called hk_ptrace request=%d", request);
+### General Pattern
+
+```objc
+static int (*orig_func)(int, pid_t, caddr_t, int);
+static int hk_func(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) return 0;
-    return orig_ptrace ? orig_ptrace(request, pid, addr, data) : 0;
+    return orig_func ? orig_func(request, pid, addr, data) : 0;
 }
-
-- (BOOL)hack {
-    tiny_hook((void *)ptrace, (void *)hk_ptrace, (void *)&orig_ptrace);
-    return YES;
-}
+// tiny_hook((void *)ptrace, (void *)hk_func, (void *)&orig_func);
 ```
 
-## tinyhook: 某个函数地址
+Shortcuts:
+- Return constant: `tiny_hook((void *)addr, (void *)ret1, NULL);`
+- Multiple signature matches: `[MemoryUtils hookWithMachineCode:... fake_func:(void *)ret count:N];`
 
-适合 IDA/Hopper 已确认静态地址/offset，或通过 `MemoryUtils` 换算出来的地址。替换函数签名必须和原函数 ABI 兼容。
+### Interpose (dyld Lazy Binding)
 
-```objective-c
-static int (*orig_check)(void);
+For Swift global variable getters or targets that resist inline hooking:
 
-static int hk_check(void) {
-    NSLogger(@"called hk_check");
-    return 1;
-}
-
-- (BOOL)hack {
-    // 方式 1: IDA/Hopper 看到的是静态 VA，如 0x100123456。
-    // 运行时地址 = 静态 VA + 当前 image 的 ASLR slide。
-    int image = [MemoryUtils indexForImageWithName:@"Target"];
-    uintptr_t staticVA = 0x100123456;
-    uintptr_t runtimeAddr = staticVA + _dyld_get_image_vmaddr_slide(image);
-
-    void *addr = (void *)runtimeAddr;
-    tiny_hook(addr, (void *)hk_check, (void *)&orig_check);
-    return YES;
-}
-```
-
-项目里已有封装，能少写就直接用：
-
-```objective-c
-- (BOOL)hack {
-    // 方式 2: 传 IDA/Hopper 里的静态 VA，内部会加 _dyld_get_image_vmaddr_slide(image)。
-    uintptr_t addr = [MemoryUtils getPtrFromAddress:@"/Contents/MacOS/Target"
-                              targetFunctionAddress:0x100123456];
-    if (!addr) return NO;
-    tiny_hook((void *)addr, (void *)hk_check, (void *)&orig_check);
-    return YES;
-}
-```
-
-如果拿到的是 Mach-O 文件里的 global/file offset，优先用 `getPtrFromGlobalOffset`，它会处理 fat binary 当前架构 slice 的 `fileOffset`：
-
-```objective-c
-- (BOOL)hack {
-    // 例: IDA/Hopper 或特征码定位到的文件全局 offset。
-    uintptr_t globalOffset = 0x123456;
-    uintptr_t addr = [MemoryUtils getPtrFromGlobalOffset:@"/Contents/MacOS/Target"
-                                         globalFunOffset:globalOffset];
-    if (!addr) return NO;
-    tiny_hook((void *)addr, (void *)hk_check, (void *)&orig_check);
-    return YES;
-}
-```
-
-如果只是让函数返回 true/false，可直接用 `common_ret.m` 里的通用函数：
-
-```objective-c
-tiny_hook((void *)targetAddr, (void *)ret1, NULL);
-tiny_hook((void *)targetAddr, (void *)ret0, NULL);
-```
-
-## tinyhook: 符号名
-
-已知符号时优先用 `symtbl_solve`（符号表）、`symexp_solve`（导出表）或 `symstub_solve`（桩/stub），少依赖硬编码偏移。`symstub_solve` 专用于 lazy bind 的 stub 符号（如 Swift 符号桥接函数），见 BoltAIHack.m。 
-
-```objective-c
-static int (*orig_status)(void);
-
-static int hk_status(void) {
-    NSLogger(@"called hk_status");
-    return 9999;
-}
-
-- (BOOL)hack {
-    int image = [MemoryUtils indexForImageWithName:@"Transmit"];
-    void *addr = symtbl_solve(image, "_TRTrialStatus");
-    NSLogger(@"_TRTrialStatus = %p", addr);
-    if (!addr) return NO;
-    tiny_hook(addr, (void *)hk_status, (void *)&orig_status);
-    return YES;
-}
-```
-
-## tinyhook: 特征码地址
-
-符号被 strip 时，用特征码找函数地址。注意区分架构。
-
-```objective-c
-- (BOOL)hack {
-#if defined(__arm64__) || defined(__aarch64__)
-    NSString *pattern = @"28 FC 7E D3 69 FC 7E D3 1F 0D 00 F1";
-#elif defined(__x86_64__)
-    NSString *pattern = @"48 89 F0 48 C1 E8 3E 48 83 F8 03";
-#endif
-
-    NSNumber *ptr = [MemoryUtils getPtrFromMachineCode:@"/Contents/MacOS/Target"
-                                           machineCode:pattern];
-    if (!ptr) return NO;
-    tiny_hook((void *)[ptr unsignedIntegerValue], (void *)ret1, NULL);
-    return YES;
-}
-```
-
-多个命中：
-
-```objective-c
-[MemoryUtils hookWithMachineCode:@"/Contents/MacOS/Target"
-                     machineCode:pattern
-                        fake_func:(void *)ret
-                            count:2];
-```
-
-## tinyhook: interpose 符号
-
-`tiny_interpose` 通过 dyld 的 lazy binding 机制拦截符号，适合 hook Swift 全局变量/getter 或无法直接 inline hook 的目标。原理是在 `__DATA,__interpose` 段替换符号的首次解析结果。
-
-```objective-c
-// Swift 全局变量 getter (Screens5Hack.m)
+```objc
 typedef void (*OrigAccess)(SWIFT_CONTEXT void *, void *, void *) SWIFTCALL;
 static OrigAccess orig_access;
 
 static SWIFTCALL void hk_access(
     SWIFT_CONTEXT void *registrar, void *subject, void *keyPath
 ) {
-    // ...
     if (orig_access) orig_access(registrar, subject, keyPath);
 }
 
-- (BOOL)hack {
-    int img = [MemoryUtils indexForImageWithName:@"Target"];
-    tiny_interpose(img,
-        "_$s11Observation0A9RegistrarV6access_7keyPath...",
-        (void *)hk_access, (void **)&orig_access);
-    return YES;
-}
+// int img = [MemoryUtils indexForImageWithName:@"Target"];
+// tiny_interpose(img, "_symbol_name", (void *)hk_access, (void **)&orig_access);
 ```
 
-```objective-c
-// Swift 全局变量 raw pointer (RevenueCatBaseHack.m)
-tiny_interpose(
-    [MemoryUtils indexForImageWithName:@"Target"],
-    "_$s10MDClockKit14AppEnvironmentO7currentACvau",
-    (void*)hook_AppEnvironment_current,
-    (void**)&orig_env_current);
-```
+## Hooking ObjC Methods
 
-## OC Method Hook
+Use `MemoryUtils hookInstanceMethod:` / `hookClassMethod:`:
 
-ObjC/Swift 暴露到 runtime 的方法，优先用 `MemoryUtils hookInstanceMethod` / `hookClassMethod`。替换方法写在当前 Hack 类里。
-
-```objective-c
+```objc
 static IMP orig_viewDidLoad;
 
 - (void)hk_viewDidLoad {
     NSLogger(@"called hk_viewDidLoad self=%@", self);
-    if (orig_viewDidLoad) {
+    if (orig_viewDidLoad)
         ((void (*)(id, SEL))orig_viewDidLoad)(self, _cmd);
-    }
 }
 
 - (BOOL)hack {
     Class cls = objc_getClass("TargetModule.ViewController");
     if (!cls) return NO;
-
     orig_viewDidLoad = [MemoryUtils hookInstanceMethod:cls
                                       originalSelector:NSSelectorFromString(@"viewDidLoad")
                                          swizzledClass:[self class]
@@ -248,40 +120,36 @@ static IMP orig_viewDidLoad;
 }
 ```
 
-类方法示例：
+Class methods use `hookClassMethod:` with identical parameter semantics.
 
-```objective-c
-[MemoryUtils hookClassMethod:NSClassFromString(@"CKContainer")
-            originalSelector:NSSelectorFromString(@"defaultContainer")
-               swizzledClass:[self class]
-            swizzledSelector:@selector(hook_defaultContainer)];
+Fallback for recursive hooking — replace IMP directly via `tiny_hook`:
+
+```objc
+Method m = class_getInstanceMethod(cls, sel);
+tiny_hook((void *)method_getImplementation(m), (void *)hk_func, (void *)&orig_func);
 ```
 
-如果 OC hook 递归，改用 method IMP + `tiny_hook`：
+## Hooking Swift Functions
 
-```objective-c
-static BOOL (*orig_activated)(id self, SEL _cmd);
+Swift uses a custom calling convention (`swiftcall`). Use `common_ret.h` macros on C hook functions to match the Swift ABI.
 
-static BOOL hk_activated(id self, SEL _cmd) {
-    NSLogger(@"called hk_activated");
-    return YES;
-}
+### Register Map
 
-- (BOOL)hack {
-    Method m = class_getInstanceMethod(objc_getClass("PADProduct"), NSSelectorFromString(@"activated"));
-    if (!m) return NO;
-    tiny_hook((void *)method_getImplementation(m), (void *)hk_activated, (void *)&orig_activated);
-    return YES;
-}
-```
+| Macro | Register | Purpose |
+|-------|----------|---------|
+| `SWIFTCALL` (func attr) | — | Synchronous Swift calling convention |
+| `SWIFTASYNCCALL` (func attr) | — | Async Swift calling convention |
+| `SWIFT_INDIRECT_RESULT` (param attr) | X8 | Large struct / tuple indirect return |
+| `SWIFT_CONTEXT` (param attr) | X20 | `self` / closure context |
+| `SWIFT_ERROR_RESULT` (param attr) | X21 | `throws` error pointer |
+| `SWIFT_ASYNC_CONTEXT` (param attr) | X22 | Async continuation context |
 
-## Swift 函数 Hook
+X8 is the standard ARM64 AAPCS indirect result register (also used by C/ObjC). X20/X21/X22 are Swift-specific callee-saved registers; each is occupied only when the function has the corresponding semantic (instance method, throws, async).
 
-Swift 调用约定与 C/ObjC 不同。hook 时用 `common_ret.h` 的宏标记参数和函数：
-`SWIFTCALL` / `SWIFTASYNCCALL`（函数属性），`SWIFT_INDIRECT_RESULT`（X8）、`SWIFT_CONTEXT`（X20）、`SWIFT_ERROR_RESULT`（X21）、`SWIFT_ASYNC_CONTEXT`（X22）。完整寄存器分配和 ABI 文档见 `common_ret.h`。
+### Example
 
-```objective-c
-// Published.subscript.getter — indirect result via X8 (BoltAIHack.m)
+```objc
+// Published.subscript.getter — indirect result via X8
 typedef void (*OrigPublishedGetter)(
     SWIFT_INDIRECT_RESULT void *result, void *instance,
     void *wrapped, void *storage
@@ -292,7 +160,6 @@ static SWIFTCALL void hook_sub_get(
     void *wrapped, void *storage
 ) {
     if (orig_sub_get) orig_sub_get(result, instance, wrapped, storage);
-    // override 返回值：写入 X8 所指内存
     id obj = (__bridge id)instance;
     if ([obj isKindOfClass:NSClassFromString(@"Target.LicenseManager")]) {
         *(volatile uint8_t *)result = 1;
@@ -300,57 +167,35 @@ static SWIFTCALL void hook_sub_get(
 }
 ```
 
-Swift 方法 self 走 X20（`SWIFT_CONTEXT`），throws 多 X21（`SWIFT_ERROR_RESULT`），async 用 `SWIFTASYNCCALL` + X22（`SWIFT_ASYNC_CONTEXT`）。Swift 符号用 `symstub_solve` 找桩地址（见"符号名"章节）。
+Swift symbols should be resolved via `symstub_solve` (see Target Resolution table).
 
-## 通用 CloudKit/Keychain/SecCode Hook
+## Common Stubs
 
-这些通用方法在 `CommonRetOC.m`，`HackProtocolDefault` 继承自它，所以 app hook 里可直接调用。
+Provided by `CommonRetOC.m` via `HackProtocolDefault` inheritance:
 
-CloudKit/iCloud:
+| Call | Effect |
+|------|--------|
+| `[self hook_AllCloudKit]` | Mocks CKContainer, NSUbiquitousKeyValueStore |
+| `[self hook_AllSecItem]` | Intercepts SecItemAdd/Update/Delete/CopyMatching |
+| `[self hook_AllSecCode:@"TEAMID1234"]` | Forges TeamIdentifier in code signing checks |
 
-```objective-c
-- (BOOL)hack {
-    [self hook_AllCloudKit]; // mock CKContainer / NSUbiquitousKeyValueStore
-    return YES;
-}
-```
+## Direct Memory Patch
 
-Keychain:
+Use `write_mem` only when instructions are short and architecture is confirmed:
 
-```objective-c
-- (BOOL)hack {
-    [self hook_AllSecItem]; // hook SecItemAdd/Update/Delete/CopyMatching
-    return YES;
-}
-```
-
-SecCode 签名校验:
-
-```objective-c
-- (BOOL)hack {
-    [self hook_AllSecCode:@"TEAMID1234"]; // 伪装/替换目标 TeamIdentifier
-    return YES;
-}
-```
-
-## 直接 Patch
-
-只在指令很短、地址和架构都确认时使用 `write_mem`。
-
-```objective-c
+```objc
 #if defined(__arm64__) || defined(__aarch64__)
 uint8_t patch[] = {0x20, 0x00, 0x80, 0xD2}; // mov x0, #1
 #elif defined(__x86_64__)
 uint8_t patch[] = {0xB8, 0x01, 0x00, 0x00, 0x00}; // mov eax, 1
 #endif
-
 write_mem((void *)targetAddr, patch, sizeof(patch));
 ```
 
-## 习惯
+## Best Practices
 
-- 改动尽量只碰一个 app/helper hook 文件。
-- hook 前检查 class/symbol/address 是否为 `nil`/`NULL`。
-- C 函数、IMP、block completion 的签名必须匹配原 ABI。
-- 静态偏移容易随版本失效；优先符号或特征码，并用 `getSupportAppVersion` 收窄版本。
-- 用 `NSLogger` 打印关键 image、地址、分支和返回值，方便注入进程里排查。
+- Minimize changes to a single app or helper hook file per task.
+- Validate class, symbol, and address availability before hooking.
+- Ensure C function, IMP, and block completion signatures match the original ABI exactly.
+- Prefer symbol lookup or signature scan over hardcoded offsets; limit version scope with `getSupportAppVersion`.
+- Log key images, addresses, control flow branches, and return values with `NSLogger` for runtime diagnosis.

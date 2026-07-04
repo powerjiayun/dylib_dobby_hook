@@ -25,9 +25,39 @@
 }
 
 + (NSString *)getSupportAppVersion {
-    return @"5.6.3";
+    return @"6"; // 6.1.3
 }
 
+//static OrigAppStorageWrappedValueGetter orig_AppStorage_getter = NULL;
+//static SWIFTCALL void hk_AppStorage_wrappedValue_getter(
+//    SWIFT_INDIRECT_RESULT void *result,
+//    void *self,
+//    void *typeMetadata
+//) {
+//    NSString *key = decodeSwiftString((uint8_t *)self + 0x10);
+//    NSLogger(@"[AppStorage_getter] self=%@ key=%@", self, key);
+//    if (orig_AppStorage_getter)
+//        orig_AppStorage_getter(result, self, typeMetadata);
+//}
+
+// MARK: - AppStorage.init<A>(wrappedValue:_:store:)(0, 'pus', 0xE300000000000000LL, 0); // -> Bool
+// x86_64: RDI=wrappedValue, RSI=_countAndFlagsBits, RDX=_object, RCX=store, RAX=box ptr
+static void *(*orig_AppStorageBoolInit)(BOOL, uintptr_t, uintptr_t, void *) = NULL;
+static void *hk_AppStorageBoolInit(BOOL wrappedValue, uintptr_t word0, uintptr_t word1, void *store) {
+    SwiftString ss = {word0, word1};
+    NSString *key = decodeSwiftString(&ss);
+    NSLogger(@"[AppStorage_init:Bool] key=%@ raw=0x%llx_0x%llx defaultValue=%d store=%p",
+             key ?: @"(nil)", (uint64_t)word0, (uint64_t)word1, wrappedValue, store);
+    BOOL defaultValue = wrappedValue;
+    if (key) {
+        NSSet *overrideKeys = [NSSet setWithObjects:@"sup", @"upp", @"iop", @"tvp", @"map", nil];
+        if ([overrideKeys containsObject:key]) {
+            defaultValue = YES;
+            NSLogger(@"[AppStorage_init:Bool] ⭐️ override key=%@ defaultValue=0->1", key);
+        }
+    }
+    return orig_AppStorageBoolInit(defaultValue, word0, word1, store);
+}
 
 - (BOOL)hack {
     
@@ -52,30 +82,39 @@
 
     ];
     
-    hookSenPlayerSubRefresh(@"/Contents/MacOS/SenPlayer");
-
+    // formalProDate
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     [defaults setObject:@"com.wuziqi.SenPlayer.LifeTimePro" forKey:@"ProId"];
     [defaults setObject:@YES forKey:@"kFont"];
     [defaults synchronize];
-    
+
+//    tiny_interpose(
+//        [MemoryUtils indexForImageWithName:@"SenPlayer"],
+//        "_$s7SwiftUI10AppStorageV12wrappedValuexvg",
+//        (void *)hk_AppStorage_wrappedValue_getter,
+//        (void **)&orig_AppStorage_getter
+//    );
+
+    tiny_interpose(
+        [MemoryUtils indexForImageWithName:@"SenPlayer"],
+        "_$s7SwiftUI10AppStorageV12wrappedValue_5storeACySbGSb_SSSo14NSUserDefaultsCSgtcSbRszlufC",
+        (void *)hk_AppStorageBoolInit,
+        (void **)&orig_AppStorageBoolInit
+    );
+
+    // _OBJC_IVAR_$__TtC9SenPlayer16StoreKit2Manager_viewShare
+    // _OBJC_IVAR_$__TtC9SenPlayer11ViewPublish__formalProDate
+    #if defined(__arm64__) || defined(__aarch64__)
+    NSString *getProDays = @"E9 23 BA 6D FA 67 01 A9 F8 5F 02 A9 F6 57 03 A9 F4 4F 04 A9 FD 7B 05 A9 FD 43 01 91 FF 43 00 D1 08 1C A0 4E ?? ?? ?? 90 ?? ?? ?? 91 ?? ?? ?? 90 ?? ?? ?? 91 ?? ?? ?? 97";
+#elif defined(__x86_64__)
+    NSString *getProDays = @"55 48 89 E5 41 57 41 56 41 55 41 54 53 48 83 EC 38 F2 0F 11 45 B0 48 8D 3D ?? ?? ?? ?? 48 8D 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 49 89 C4 48 8B 40 F8 48 8B 40 40 E8 ?? ?? ?? ??";
+#endif
+    [MemoryUtils hookWithMachineCode:@"/Contents/MacOS/SenPlayer"
+                         machineCode:getProDays
+                           fake_func:(void *)ret1
+                               count:1
+    ];
     return YES;
 }
 
-void hookSenPlayerSubRefresh(NSString *searchFilePath) {
-    /*
-     凭证有效时长: 无凭证
-     */
-#if defined(__arm64__) || defined(__aarch64__)
-    NSString *mark = @"E9 23 B9 6D FC 6F 01 A9 FA 67 02 A9 F8 5F 03 A9 F6 57 04 A9 F4 4F 05 A9 FD 7B 06 A9 FD 83 01 91 FF 43 00 D1 F5 03 14 AA 08 40 60 1E";
-#elif defined(__x86_64__)
-    NSString *mark = @"55 48 89 E5 41 57 41 56 41 55 41 54 53 48 83 EC 68 4D 89 EC F2 0F 11 45 B8 48";
-#endif
-    
-    [MemoryUtils hookWithMachineCode:searchFilePath
-                         machineCode:mark
-                           fake_func:(void *)ret0
-                               count:1
-    ];
-}
 @end

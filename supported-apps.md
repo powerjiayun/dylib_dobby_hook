@@ -39,7 +39,7 @@
 | Bartender 6         | *.      | ✔   | ✔   | <https://www.macbartender.com/>                             |     | NKR00711    |
 | Folder Preview Pro  | *.      | ✔   | ✔   | <https://anybox.ltd/folder-preview-pro>                     | ON  | NKR00711    |
 | DeskWidge           | *       | ✔   | ✔   | App Store                                                   |     | ooooooio    |
-| SenPlayer           | 5.6.3   | ✔   | ✔   | App Store                                                   |     | ooooooio    |
+| SenPlayer           | 6.1.3   | ✔   | ✔   | App Store                                                   |     | ooooooio    |
 | LiveWallpaper       | *       | ✔   | ✔   | App Store                                                   |     | ooooooio    |
 | Hopper Disassembler | 6.*     | ✔   | ✔   | <https://www.hopperapp.com/download.html>                   | ON  |             |
 | Snipaste            | 2.*     | ✔   | ✔   | <https://www.snipaste.com/>                                 | ON  |             |

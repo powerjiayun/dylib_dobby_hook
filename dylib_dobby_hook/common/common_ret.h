@@ -16,6 +16,8 @@
 #import "MemoryUtils.h"
 #import <objc/runtime.h>
 #include <mach-o/dyld.h>
+#include <string.h>
+#import <dispatch/dispatch.h>
 #if TARGET_OS_OSX
 #include <sys/ptrace.h>
 #include <libproc.h>
@@ -23,7 +25,6 @@
 
 #endif
 #import <objc/message.h>
-#import "common_ret.h"
 #include <sys/xattr.h>
 #import <CommonCrypto/CommonCrypto.h>
 #import "EncryptionUtils.h"
@@ -62,6 +63,31 @@
 
 #endif
 
+//
+// Swift.String (16 Bytes)
+//
+// Large:
+//   word0 = 0xD... | length
+//   word1 = 0x8... | ptr
+//
+// Small (SSO):
+//   word0 = 前8字节
+//   word1 = 后7字节 + Flag
+//
+typedef union {
+    struct {
+        uint64_t _object;
+        uint64_t _countAndFlags;
+    };
+    struct {
+        uint64_t word0;
+        uint64_t word1;
+    };
+} SwiftString;
+
+NSString *decodeSwiftString(const void *addr);
+
+SwiftString makeSwiftString(NSString *imageName, NSString *nsStr);
 
 //#ifdef __arm64__
 //    #define SAVE_SWIFT_CONTEXT uint64_t swift_context; \
@@ -90,6 +116,21 @@
 //       CCIfSwiftError → X21  (error)
 //   [4] swiftlang/swift — docs/ABI/CallingConvention.rst（完整规范）
 //       https://github.com/swiftlang/swift/blob/main/docs/ABI/CallingConvention.rst
+//
+// ┌──────────────────────────────────────┬────────────┬──────────────────────────┐
+// │ 宏                                   │ 寄存器     │ 用途                     │
+// ├──────────────────────────────────────┼────────────┼──────────────────────────┤
+// │ SWIFTCALL                            │ —          │ 函数属性：Swift 同步 CC  │
+// │ SWIFTASYNCCALL                       │ —          │ 函数属性：Swift 异步 CC  │
+// │ SWIFT_INDIRECT_RESULT                │ X8         │ 大结构体/元组间接返回    │
+// │ SWIFT_CONTEXT                        │ X20        │ self / closure 上下文    │
+// │ SWIFT_ERROR_RESULT                   │ X21        │ throws 错误指针          │
+// │ SWIFT_ASYNC_CONTEXT                  │ X22        │ async 续体上下文         │
+// └──────────────────────────────────────┴────────────┴──────────────────────────┘
+//
+// 注: X8 是 ARM64 AAPCS 标准的间接结果寄存器，C/ObjC 同样使用，非 Swift 特有。
+//     X20/X21/X22 为 Swift 调用约定专用的 callee-saved 寄存器，
+//     仅在该函数有对应语义时被占用（实例方法用 X20、throws 用 X21、async 用 X22）。
 
 // ============================================================================
 // SWIFTCALL
